@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MIDI to Sheet Music Converter</title>
+    
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Tone.js MIDI Parser -->
+    <script src="https://unpkg.com/@tonejs/midi/build/Midi.js"></script>
+    
+    <!-- ABCjs for rendering sheet music and playing audio -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/abcjs/6.2.2/abcjs-basic-min.js"></script>
+    <link rel="stylesheet" type="text/css" href="https://unpkg.com/abcjs@6.2.2/abcjs-audio.css">
+    
+    <style>
+        /* Custom styles to enhance the ABCjs player and sheet music container */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+        
+        .abcjs-container {
+            overflow-x: auto;
+            background: white;
+            border-radius: 0.5rem;
+            padding: 1.5rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            min-height: 200px;
+        }
+
+        #audio-player {
+            max-width: 100%;
+            margin-top: 1rem;
+            padding: 10px;
+            background: #f8fafc;
+            border-radius: 0.5rem;
+            border: 1px solid #e2e8f0;
+        }
+
+        .drop-zone {
+            border: 2px dashed #cbd5e1;
+            transition: all 0.3s ease;
+        }
+        
+        .drop-zone.dragover {
+            background-color: #e2e8f0;
+            border-color: #3b82f6;
+        }
+
+        .spinner {
+            border: 3px solid rgba(255,255,255,0.3);
+            border-radius: 50%;
+            border-top: 3px solid #3b82f6;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        
+        /* Fix the annoying ABCJS missing CSS warning */
+        .abcjs-css-warning { display: none !important; }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        svg {
+            fill: currentColor;
+        }
+        
+        @media print {
+            body * {
+                visibility: hidden;
+            }
+            #sheet-music, #sheet-music * {
+                visibility: visible;
+            }
+            #sheet-music {
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100%;
+                box-shadow: none;
+                border: none;
+                padding: 0;
+            }
+        }
+    </style>
+</head>
+<body class="min-h-screen text-slate-800 p-4 md:p-8">
+
+    <main class="max-w-5xl mx-auto space-y-6">
+        <!-- Header Section -->
+        <header class="text-center space-y-2">
+            <h1 class="text-3xl md:text-4xl font-extrabold text-slate-900 tracking-tight">MIDI to Sheet Music</h1>
+            <p class="text-slate-600 max-w-xl mx-auto">Upload any .mid or .midi file to transcribe it into readable sheet music. Uses intelligent quantization to generate ABC notation.</p>
+        </header>
+
+        <!-- Upload Dropzone -->
+        <div id="drop-zone" class="drop-zone bg-white rounded-xl p-8 flex flex-col items-center justify-center cursor-pointer shadow-sm relative group overflow-hidden">
+            <input type="file" id="file-input" accept=".mid,.midi,audio/midi" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
+            
+            <div class="pointer-events-none flex flex-col items-center space-y-3">
+                <div class="p-4 bg-blue-50 text-blue-500 rounded-full group-hover:scale-110 transition-transform duration-300">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8" viewBox="0 0 24 24">
+                        <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+                    </svg>
+                </div>
+                <h3 class="text-lg font-semibold text-slate-700">Click or drag a MIDI file here</h3>
+                <p class="text-sm text-slate-500">Supports multi-track standard .mid files</p>
+            </div>
+            
+            <!-- Loading overlay -->
+            <div id="loading-overlay" class="absolute inset-0 bg-white/90 z-20 flex flex-col items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200">
+                <div class="spinner border-blue-500 w-8 h-8 mb-2"></div>
+                <span class="text-sm font-medium text-slate-600">Processing MIDI...</span>
+            </div>
+        </div>
+
+        <!-- Error Message Container -->
+        <div id="error-message" class="hidden bg-red-50 text-red-600 border border-red-200 p-4 rounded-lg text-sm">
+        </div>
+
+        <!-- Result Section -->
+        <section class="bg-white p-4 md:p-6 rounded-xl shadow-md border border-slate-100 space-y-4">
+            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <div>
+                    <h2 class="text-xl font-bold text-slate-800" id="tune-title">Sheet Music Preview</h2>
+                    <p class="text-sm text-slate-500" id="tune-info">Upload a file to begin transcription</p>
+                </div>
+                <div class="flex flex-wrap gap-2 items-center">
+                    <select id="instrument-select" class="px-3 py-2 bg-slate-100 border-none text-slate-700 text-sm font-medium rounded-lg cursor-pointer hover:bg-slate-200 transition-colors focus:ring-2 focus:ring-blue-500 outline-none" title="Select Playback Instrument">
+                        <option value="0">Piano</option>
+                        <option value="24">Guitar</option>
+                        <option value="40">Violin</option>
+                        <option value="42">Cello</option>
+                        <option value="73">Flute</option>
+                        <option value="56">Trumpet</option>
+                        <option value="65">Saxophone</option>
+                        <option value="11">Vibraphone</option>
+                        <option value="19">Organ</option>
+                    </select>
+                    <button id="print-btn" class="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded-lg transition-colors flex items-center gap-2" title="Print or Save as PDF">
+                        <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z"/></svg>
+                        Print / PDF
+                    </button>
+                    <button id="download-abc-btn" class="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded-lg transition-colors flex items-center gap-2" title="Download ABC File">
+                        <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+                        .abc
+                    </button>
+                    <button id="copy-abc-btn" class="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium rounded-lg transition-colors flex items-center gap-2" title="Copy ABC Notation">
+                        <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+                        Copy
+                    </button>
+                </div>
+            </div>
+
+            <!-- ABCjs rendering target -->
+            <div id="sheet-music" class="abcjs-container"></div>
+            
+            <!-- ABCjs audio controls target -->
+            <div id="audio-player"></div>
+            
+            <!-- Hidden textarea for copying -->
+            <textarea id="abc-source" class="hidden"></textarea>
+        </section>
+        
+        <!-- App Details / Logic Information -->
+        <div class="text-xs text-slate-400 text-center">
+            Note: Complex polyphony, rubato, and tuplets are heuristically quantized. For best results, use MIDI files recorded to a click track.
+        </div>
+    </main>
+
+    <script>
+        // Global variables for UI components and state
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file-input');
+        const loadingOverlay = document.getElementById('loading-overlay');
+        const errorMessage = document.getElementById('error-message');
+        const sheetMusicDiv = document.getElementById('sheet-music');
+        const abcSource = document.getElementById('abc-source');
+        const copyBtn = document.getElementById('copy-abc-btn');
+        const downloadAbcBtn = document.getElementById('download-abc-btn');
+        const printBtn = document.getElementById('print-btn');
+        const tuneTitle = document.getElementById('tune-title');
+        const tuneInfo = document.getElementById('tune-info');
+        const instrumentSelect = document.getElementById('instrument-select');
+        
+        let synthControl = null;
+        let currentBaseAbc = "";
+
+        // Default "Welcome" ABC notation
+        const defaultAbc = `X: 1
+T: Welcome to the Converter
+M: 4/4
+L: 1/4
+K: C
+c c g g | a a g2 | f f e e | d d c2 |]`;
+
+        // Initialize empty synth controller and render default music
+        window.addEventListener('load', () => {
+            currentBaseAbc = defaultAbc;
+            renderSheetMusic(currentBaseAbc);
+        });
+
+        // --- Event Listeners for File Handling --- //
+        
+        instrumentSelect.addEventListener('change', () => {
+            if (currentBaseAbc) {
+                renderSheetMusic(currentBaseAbc);
+            }
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                processFile(e.target.files[0]);
+            }
+        });
+
+        // Drag and Drop styling
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+        ['dragleave', 'dragend', 'drop'].forEach(evt => {
+            dropZone.addEventListener(evt, () => {
+                dropZone.classList.remove('dragover');
+            });
+        });
+
+        // Copy ABC string to clipboard
+        copyBtn.addEventListener('click', () => {
+            if (abcSource.value) {
+                // Using fallback method for broader sandbox/iframe compatibility
+                abcSource.classList.remove('hidden');
+                abcSource.select();
+                document.execCommand('copy');
+                abcSource.classList.add('hidden');
+                
+                // Visual feedback
+                const originalText = copyBtn.innerHTML;
+                copyBtn.innerHTML = `<svg class="w-4 h-4 text-green-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg> Copied!`;
+                setTimeout(() => { copyBtn.innerHTML = originalText; }, 2000);
+            }
+        });
+
+        // Download ABC file
+        downloadAbcBtn.addEventListener('click', () => {
+            if (abcSource.value) {
+                const blob = new Blob([abcSource.value], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                // Clean the tune title for the filename
+                let filename = tuneTitle.textContent || "sheet-music";
+                filename = filename.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+                a.download = `${filename}.abc`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }
+        });
+
+        // Print to PDF
+        printBtn.addEventListener('click', () => {
+            window.print();
+        });
+
+        // Main processing pipeline
+        async function processFile(file) {
+            hideError();
+            showLoading(true);
+            
+            try {
+                // Read as ArrayBuffer for @tonejs/midi
+                const arrayBuffer = await file.arrayBuffer();
+                
+                // Ensure Midi library is available
+                if (typeof window.Midi === 'undefined') {
+                    throw new Error("MIDI parsing library failed to load. Please refresh the page.");
+                }
+
+                const midi = new window.Midi(arrayBuffer);
+                const abcString = generateAbcFromMidi(midi, file.name);
+                
+                currentBaseAbc = abcString;
+                renderSheetMusic(abcString);
+                
+                tuneTitle.textContent = midi.name || file.name;
+                
+                // Display some stats
+                let totalNotes = midi.tracks.reduce((sum, t) => sum + t.notes.length, 0);
+                tuneInfo.textContent = `${midi.tracks.length} track(s), ${totalNotes} notes parsed at ${Math.round(midi.header.tempos[0]?.bpm || 120)} BPM`;
+
+            } catch (err) {
+                console.error(err);
+                showError("Failed to parse MIDI file. Make sure it's a valid standard MIDI file (.mid).");
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // --- Core Algorithm: MIDI to ABC Transcription --- //
+
+        function generateAbcFromMidi(midi, filename) {
+            let abc = "X:1\n";
+            abc += `T:${midi.name || filename.replace('.mid', '')}\n`;
+            abc += "M:4/4\n";
+            abc += "L:1/16\n"; // Using 16th notes as the baseline unit for quantization
+            const bpm = Math.round(midi.header.tempos[0]?.bpm || 120);
+            abc += `Q:1/4=${bpm}\n`;
+            abc += "K:C\n"; // Fixed: Removed double newline that prematurely ended the tune header
+
+            // Filter out tracks without notes
+            const activeTracks = midi.tracks
+                .filter(t => t.notes.length > 0)
+                .sort((a, b) => b.notes.length - a.notes.length)
+                .slice(0, 2); // Limit to top 2 tracks to avoid chaotic orchestral scores
+
+            if (activeTracks.length === 0) {
+                return abc + "z16 |]"; // Empty track
+            }
+
+            const ppq = midi.header.ppq; 
+            const ticksPer16th = ppq / 4;
+            const ticksPerBar = ppq * 4;
+
+            for (let i = 0; i < activeTracks.length; i++) {
+                const track = activeTracks[i];
+                // Determine clef based on average pitch
+                const avgPitch = track.notes.reduce((sum, n) => sum + n.midi, 0) / track.notes.length;
+                const clef = avgPitch < 55 ? "bass" : "treble";
+                
+                abc += `V:${i+1} clef=${clef} name="Trk ${i+1}"\n`;
+                abc += transcribeTrackStream(track, ticksPer16th, ticksPerBar, i === activeTracks.length - 1);
+                abc += "\n"; // Fixed: Removed double newline that broke multi-voice rendering
+            }
+
+            return abc;
+        }
+
+        function transcribeTrackStream(track, ticksPer16th, ticksPerBar, isLastTrack = true) {
+            // Group notes by quantized starting tick to detect chords
+            const notesByTick = {};
+            track.notes.forEach(note => {
+                const quantizedTick = Math.round(note.ticks / ticksPer16th) * ticksPer16th;
+                if (!notesByTick[quantizedTick]) notesByTick[quantizedTick] = [];
+                notesByTick[quantizedTick].push(note);
+            });
+
+            const sortedTicks = Object.keys(notesByTick).map(Number).sort((a, b) => a - b);
+            
+            let currentTick = 0;
+            let nextBarTick = ticksPerBar;
+            let abcText = "";
+            let notesInLine = 0;
+
+            for (let i = 0; i < sortedTicks.length; i++) {
+                const tick = sortedTicks[i];
+                
+                // 1. Fill rests if there is a gap
+                if (tick > currentTick) {
+                    let restTicks = tick - currentTick;
+                    let multiplier = Math.round(restTicks / ticksPer16th);
+                    
+                    // Handle rests that cross barlines by splitting them
+                    while (multiplier > 0) {
+                        let ticksToNextBar = Math.round((nextBarTick - currentTick) / ticksPer16th);
+                        if (ticksToNextBar <= 0) {
+                            abcText += "| ";
+                            nextBarTick += ticksPerBar;
+                            notesInLine++;
+                            if (notesInLine > 8) { abcText += "\n"; notesInLine = 0; }
+                            continue;
+                        }
+                        
+                        let restSize = Math.min(multiplier, ticksToNextBar);
+                        if (restSize > 0) {
+                            abcText += "z" + (restSize === 1 ? "" : restSize) + " ";
+                        }
+                        
+                        multiplier -= restSize;
+                        currentTick += restSize * ticksPer16th;
+                    }
+                }
+
+                // Insert barline if exactly on a boundary
+                while (currentTick >= nextBarTick) {
+                    abcText += "| ";
+                    nextBarTick += ticksPerBar;
+                    notesInLine++;
+                    if (notesInLine > 8) { abcText += "\n"; notesInLine = 0; }
+                }
+
+                // 2. Process notes/chords at this tick
+                const notes = notesByTick[tick];
+                let maxDuration = 0;
+                notes.forEach(n => { if (n.durationTicks > maxDuration) maxDuration = n.durationTicks; });
+                
+                let durationMult = Math.round(maxDuration / ticksPer16th);
+                
+                // 3. Polyphony & Barline limits to ensure mathematically valid ABC measures
+                let nextTick = sortedTicks[i + 1];
+                if (nextTick !== undefined) {
+                    let maxMultToNext = Math.round((nextTick - currentTick) / ticksPer16th);
+                    if (maxMultToNext > 0 && durationMult > maxMultToNext) {
+                        durationMult = maxMultToNext; // Clip overlapping notes
+                    }
+                }
+                
+                let ticksToNextBar = Math.round((nextBarTick - currentTick) / ticksPer16th);
+                if (ticksToNextBar > 0 && durationMult > ticksToNextBar) {
+                    durationMult = ticksToNextBar; // Clip to barline
+                }
+                
+                if (durationMult <= 0) durationMult = 1; // Minimum 1/16th note length
+
+                if (notes.length === 1) {
+                    abcText += midiToAbcPitch(notes[0].midi) + (durationMult === 1 ? "" : durationMult) + " ";
+                } else {
+                    // It's a chord
+                    abcText += "[";
+                    let uniqueMidis = [...new Set(notes.map(n => n.midi))];
+                    uniqueMidis.forEach(m => {
+                        abcText += midiToAbcPitch(m);
+                    });
+                    abcText += "]" + (durationMult === 1 ? "" : durationMult) + " ";
+                }
+
+                currentTick += durationMult * ticksPer16th;
+                notesInLine++;
+            }
+
+            // Fill final measure with rests if needed, and add end bar
+            if (currentTick < nextBarTick) {
+                let remainingMult = Math.round((nextBarTick - currentTick) / ticksPer16th);
+                if (remainingMult > 0) {
+                    abcText += "z" + (remainingMult === 1 ? "" : remainingMult) + " ";
+                }
+            }
+            abcText += isLastTrack ? "|]" : "|";
+            
+            return abcText;
+        }
+
+        // Translates a MIDI note number (0-127) to standard ABC notation pitch string
+        // ABC Mapping: Middle C (MIDI 60) -> c, C5 (MIDI 72) -> c', C3 (MIDI 48) -> C
+        function midiToAbcPitch(midiNum) {
+            const noteNamesUpper = ['C', '^C', 'D', '^D', 'E', 'F', '^F', 'G', '^G', 'A', '^A', 'B'];
+            const noteNamesLower = ['c', '^c', 'd', '^d', 'e', 'f', '^f', 'g', '^g', 'a', '^a', 'b'];
+
+            const noteIndex = midiNum % 12;
+            const octave = Math.floor(midiNum / 12) - 1;
+
+            if (octave >= 4) {
+                // C4 (Middle C) and above use lowercase
+                let str = noteNamesLower[noteIndex];
+                // C4 -> c, C5 -> c', C6 -> c''
+                for (let i = 4; i < octave; i++) str += "'";
+                return str;
+            } else {
+                // C3 and below use uppercase
+                let str = noteNamesUpper[noteIndex];
+                // C3 -> C, C2 -> C,, C1 -> C,,
+                for (let i = 3; i > octave; i--) str += ",";
+                return str;
+            }
+        }
+
+        // --- Rendering & Audio Control --- //
+        
+        function renderSheetMusic(abcString) {
+            // Inject MIDI program based on selection
+            const instrumentNum = instrumentSelect.value;
+            let renderAbc = abcString;
+            
+            // Apply the chosen instrument to ALL voices (multi-track) or the global header (single-track)
+            if (renderAbc.includes('V:')) {
+                // Add MIDI program directive immediately after each Voice definition
+                renderAbc = renderAbc.replace(/^(V:.*)$/gm, `$1\n%%MIDI program ${instrumentNum}`);
+            } else {
+                // Fallback for simple tunes without explicitly declared voices
+                renderAbc = renderAbc.replace(/^(K:.*)$/gm, `$1\n%%MIDI program ${instrumentNum}`);
+            }
+
+            abcSource.value = renderAbc;
+            
+            // 1. Render the visual notation
+            const visualObj = ABCJS.renderAbc("sheet-music", renderAbc, {
+                responsive: 'resize',
+                add_classes: true,
+                paddingtop: 15,
+                paddingbottom: 15,
+                paddingright: 20,
+                paddingleft: 20
+            });
+
+            // 2. Setup Audio Synthesizer
+            if (ABCJS.synth.supportsAudio()) {
+                // Wipe the old player to force a clean slate when instruments change
+                const audioContainer = document.getElementById("audio-player");
+                audioContainer.innerHTML = "";
+                
+                synthControl = new ABCJS.synth.SynthController();
+                synthControl.load("#audio-player", null, {
+                    displayLoop: true,
+                    displayRestart: true,
+                    displayPlay: true,
+                    displayProgress: true,
+                    displayWarp: true
+                });
+                
+                // Initialize audio for the rendered tune
+                if (visualObj && visualObj.length > 0) {
+                    synthControl.setTune(visualObj[0], false).catch((err) => {
+                        console.warn("Audio Context limitation or warning:", err);
+                    });
+                }
+            } else {
+                document.getElementById("audio-player").innerHTML = 
+                    "<div class='p-4 bg-orange-50 text-orange-700 text-sm rounded-lg'>Your browser does not support audio playback for sheet music.</div>";
+            }
+        }
+
+        // --- Utility UI Functions --- //
+
+        function showLoading(show) {
+            loadingOverlay.style.opacity = show ? '1' : '0';
+            loadingOverlay.style.pointerEvents = show ? 'auto' : 'none';
+        }
+
+        function showError(msg) {
+            errorMessage.textContent = msg;
+            errorMessage.classList.remove('hidden');
+        }
+
+        function hideError() {
+            errorMessage.classList.add('hidden');
+            errorMessage.textContent = '';
+        }
+    </script>
+</body>
+</html>
